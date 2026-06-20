@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { initAuth } from './firebase'
-import { useCollection, uploadPhoto } from './useFirestore'
+import { useCollection } from './useFirestore'
 import './App.css'
 
 const COLORS = ['#1a73e8','#ea4335','#34a853','#ff6b35','#9c27b0','#00acc1','#e91e63','#ff9800']
@@ -120,16 +120,12 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
     setSaving(true)
     try {
       const id = generateId()
-      let photoUrl = null
-      if (photoPreview) {
-        photoUrl = await uploadPhoto(id, photoPreview)
-      }
       await addPlayer({
         id,
         name: name.trim(),
         nickname: nickname.trim(),
         color: COLORS[players.length % COLORS.length],
-        photo: photoUrl,
+        photo: photoPreview || null,
       })
       setName('')
       setNickname('')
@@ -147,8 +143,7 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
       const file = e.target.files?.[0]
       if (!file) return
       const dataUrl = await resizeImage(file)
-      const photoUrl = await uploadPhoto(playerId, dataUrl)
-      await updatePlayer(playerId, { photo: photoUrl })
+      await updatePlayer(playerId, { photo: dataUrl })
     }
     input.click()
   }

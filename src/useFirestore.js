@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react'
 import {
   collection, doc, onSnapshot, setDoc, deleteDoc, writeBatch,
 } from 'firebase/firestore'
-import { ref, uploadString, getDownloadURL, deleteObject } from 'firebase/storage'
-import { db, storage } from './firebase'
+import { db } from './firebase'
 
 export function useCollection(name) {
   const [items, setItems] = useState([])
@@ -34,15 +33,3 @@ export function useCollection(name) {
   return { items, loading, addItem, removeItem, updateItem }
 }
 
-export async function uploadPhoto(playerId, dataUrl) {
-  const storageRef = ref(storage, `photos/${playerId}.jpg`)
-  await uploadString(storageRef, dataUrl, 'data_url')
-  return getDownloadURL(storageRef)
-}
-
-export async function deletePhoto(playerId) {
-  try {
-    const storageRef = ref(storage, `photos/${playerId}.jpg`)
-    await deleteObject(storageRef)
-  } catch {}
-}
