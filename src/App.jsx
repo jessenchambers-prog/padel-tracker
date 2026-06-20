@@ -4,6 +4,7 @@ import { useCollection } from './useFirestore'
 import './App.css'
 
 const COLORS = ['#1a73e8','#ea4335','#34a853','#ff6b35','#9c27b0','#00acc1','#e91e63','#ff9800']
+const CHART_COLORS = ['#1a73e8','#ea4335','#34a853','#ff6b35','#9c27b0','#00acc1','#e91e63','#ff9800']
 
 function getInitials(name) {
   return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
@@ -91,11 +92,182 @@ function normalizeSets(sets) {
   return sets.map(s => Array.isArray(s) ? s : [s.t1, s.t2])
 }
 
+function getPlayerResult(m, playerId) {
+  const onTeam1 = m.team1.includes(playerId)
+  const onTeam2 = m.team2.includes(playerId)
+  if (!onTeam1 && !onTeam2) return null
+  const t1sets = m.sets.filter(s => s[0] > s[1]).length
+  const t1won = t1sets >= 2
+  const won = (onTeam1 && t1won) || (onTeam2 && !t1won)
+  return { won, onTeam1 }
+}
+
+function calcElo(players, matches) {
+  const K = 32
+  const elo = {}
+  players.forEach(p => { elo[p.id] = 1200 })
+  const sorted = [...matches].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))
+  const history = {}
+  players.forEach(p => { history[p.id] = [{ match: 0, elo: 1200 }] })
+
+  sorted.forEach((m, idx) => {
+    const t1avg = m.team1.reduce((s, id) => s + (elo[id] || 1200), 0) / m.team1.length
+    const t2avg = m.team2.reduce((s, id) => s + (elo[id] || 1200), 0) / m.team2.length
+    const expected1 = 1 / (1 + Math.pow(10, (t2avg - t1avg) / 400))
+    const t1won = m.sets.filter(s => s[0] > s[1]).length >= 2
+    const score1 = t1won ? 1 : 0
+
+    m.team1.forEach(id => {
+      if (!elo[id]) elo[id] = 1200
+      elo[id] += K * (score1 - expected1)
+      if (!history[id]) history[id] = []
+      history[id].push({ match: idx + 1, elo: Math.round(elo[id]) })
+    })
+    m.team2.forEach(id => {
+      if (!elo[id]) elo[id] = 1200
+      elo[id] += K * ((1 - score1) - (1 - expected1))
+      if (!history[id]) history[id] = []
+      history[id].push({ match: idx + 1, elo: Math.round(elo[id]) })
+    })
+  })
+
+  return { elo, history, totalMatches: sorted.length }
+}
+
+function WinRateChart({ players, matches }) {
+  if (matches.length < 2) return null
+  const sorted = [...matches].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))
+  const activePlayers = players.filter(p => matches.some(m => getPlayerResult(m, p.id)))
+
+  const lines = activePlayers.map((p, pi) => {
+    let wins = 0, total = 0
+    const points = []
+    sorted.forEach((m, i) => {
+      const r = getPlayerResult(m, p.id)
+      if (!r) return
+      total++
+      if (r.won) wins++
+      points.push({ x: i, y: (wins / total) * 100 })
+    })
+    return { player: p, points, color: CHART_COLORS[pi % CHART_COLORS.length] }
+  }).filter(l => l.points.length > 0)
+
+  const W = 600, H = 250, PAD = { top: 20, right: 20, bottom: 30, left: 40 }
+  const plotW = W - PAD.left - PAD.right
+  const plotH = H - PAD.top - PAD.bottom
+  const maxX = sorted.length - 1 || 1
+
+  function toX(x) { return PAD.left + (x / maxX) * plotW }
+  function toY(y) { return PAD.top + plotH - (y / 100) * plotH }
+
+  return (
+    <div className="card">
+      <h2>Win Rate Over Time</h2>
+      <div style={{ overflowX: 'auto' }}>
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, display: 'block' }}>
+          {[0, 25, 50, 75, 100].map(v => (
+            <g key={v}>
+              <line x1={PAD.left} y1={toY(v)} x2={W - PAD.right} y2={toY(v)} stroke="var(--border-light)" strokeWidth="1" />
+              <text x={PAD.left - 6} y={toY(v) + 4} textAnchor="end" fill="var(--text-muted)" fontSize="10">{v}%</text>
+            </g>
+          ))}
+          <line x1={PAD.left} y1={toY(50)} x2={W - PAD.right} y2={toY(50)} stroke="var(--border)" strokeWidth="1" strokeDasharray="4" />
+          {lines.map(l => (
+            <g key={l.player.id}>
+              <polyline
+                fill="none" stroke={l.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                points={l.points.map(p => `${toX(p.x)},${toY(p.y)}`).join(' ')}
+              />
+              {l.points.length > 0 && (
+                <circle cx={toX(l.points[l.points.length - 1].x)} cy={toY(l.points[l.points.length - 1].y)} r="4" fill={l.color} />
+              )}
+            </g>
+          ))}
+          <text x={W / 2} y={H - 4} textAnchor="middle" fill="var(--text-muted)" fontSize="10">Matches played</text>
+        </svg>
+      </div>
+      <div className="chart-legend">
+        {lines.map(l => (
+          <div key={l.player.id} className="chart-legend-item">
+            <span className="chart-legend-dot" style={{ background: l.color }} />
+            <span>{l.player.name}</span>
+            <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{l.points[l.points.length - 1]?.y.toFixed(0)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function EloChart({ players, matches }) {
+  const { history, totalMatches } = calcElo(players, matches)
+  if (totalMatches < 2) return null
+  const activePlayers = players.filter(p => history[p.id] && history[p.id].length > 1)
+
+  const allElos = activePlayers.flatMap(p => history[p.id].map(h => h.elo))
+  const minElo = Math.min(...allElos) - 20
+  const maxElo = Math.max(...allElos) + 20
+  const eloRange = maxElo - minElo || 1
+
+  const W = 600, H = 250, PAD = { top: 20, right: 20, bottom: 30, left: 45 }
+  const plotW = W - PAD.left - PAD.right
+  const plotH = H - PAD.top - PAD.bottom
+
+  function toX(x) { return PAD.left + (x / totalMatches) * plotW }
+  function toY(e) { return PAD.top + plotH - ((e - minElo) / eloRange) * plotH }
+
+  const gridLines = []
+  const step = eloRange > 200 ? 50 : 25
+  for (let v = Math.ceil(minElo / step) * step; v <= maxElo; v += step) {
+    gridLines.push(v)
+  }
+
+  return (
+    <div className="card">
+      <h2>ELO Rating Over Time</h2>
+      <div style={{ overflowX: 'auto' }}>
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, display: 'block' }}>
+          {gridLines.map(v => (
+            <g key={v}>
+              <line x1={PAD.left} y1={toY(v)} x2={W - PAD.right} y2={toY(v)} stroke="var(--border-light)" strokeWidth="1" />
+              <text x={PAD.left - 6} y={toY(v) + 4} textAnchor="end" fill="var(--text-muted)" fontSize="10">{v}</text>
+            </g>
+          ))}
+          <line x1={PAD.left} y1={toY(1200)} x2={W - PAD.right} y2={toY(1200)} stroke="var(--border)" strokeWidth="1" strokeDasharray="4" />
+          {activePlayers.map((p, pi) => {
+            const pts = history[p.id]
+            const color = CHART_COLORS[pi % CHART_COLORS.length]
+            return (
+              <g key={p.id}>
+                <polyline
+                  fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                  points={pts.map(pt => `${toX(pt.match)},${toY(pt.elo)}`).join(' ')}
+                />
+                <circle cx={toX(pts[pts.length - 1].match)} cy={toY(pts[pts.length - 1].elo)} r="4" fill={color} />
+              </g>
+            )
+          })}
+          <text x={W / 2} y={H - 4} textAnchor="middle" fill="var(--text-muted)" fontSize="10">Matches played</text>
+        </svg>
+      </div>
+      <div className="chart-legend">
+        {activePlayers.map((p, pi) => (
+          <div key={p.id} className="chart-legend-item">
+            <span className="chart-legend-dot" style={{ background: CHART_COLORS[pi % CHART_COLORS.length] }} />
+            <span>{p.name}</span>
+            <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{history[p.id][history[p.id].length - 1]?.elo}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const [tab, setTab] = useState('stats')
   const [ready, setReady] = useState(false)
   const { items: players, loading: playersLoading, addItem: addPlayer, removeItem: removePlayer, updateItem: updatePlayer } = useCollection('players')
-  const { items: matches, loading: matchesLoading, addItem: addMatch, removeItem: removeMatch } = useCollection('matches')
+  const { items: matches, loading: matchesLoading, addItem: addMatch, removeItem: removeMatch, updateItem: updateMatch } = useCollection('matches')
 
   useEffect(() => {
     initAuth().then(() => setReady(true))
@@ -129,7 +301,7 @@ function App() {
       </nav>
 
       {tab === 'players' && <PlayersTab players={players} addPlayer={addPlayer} removePlayer={removePlayer} updatePlayer={updatePlayer} matches={normalizedMatches} />}
-      {tab === 'matches' && <MatchesTab matches={sortedMatches} removeMatch={removeMatch} players={players} />}
+      {tab === 'matches' && <MatchesTab matches={sortedMatches} removeMatch={removeMatch} players={players} updateMatch={updateMatch} />}
       {tab === 'new-match' && <NewMatchTab players={players} addMatch={addMatch} onDone={() => setTab('matches')} />}
       {tab === 'stats' && <StatsTab players={players} matches={normalizedMatches} />}
     </>
@@ -224,13 +396,9 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
   function getPlayerRecord(id) {
     let w = 0, l = 0
     matches.forEach(m => {
-      const onTeam1 = m.team1.includes(id)
-      const onTeam2 = m.team2.includes(id)
-      if (!onTeam1 && !onTeam2) return
-      const t1sets = m.sets.filter(s => s[0] > s[1]).length
-      const t1won = t1sets >= 2
-      if ((onTeam1 && t1won) || (onTeam2 && !t1won)) w++
-      else l++
+      const r = getPlayerResult(m, id)
+      if (!r) return
+      if (r.won) w++; else l++
     })
     return `${w}W - ${l}L`
   }
@@ -245,7 +413,6 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
         />
       )}
 
-      {/* Edit Modal */}
       {editing && (
         <div className="modal-overlay" onClick={() => setEditing(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -396,6 +563,7 @@ function NewMatchTab({ players, addMatch, onDone }) {
         team1: t1,
         team2: t2,
         sets: activeSets.map(s => ({ t1: s[0], t2: s[1] })),
+        comments: [],
       })
       setTeam1(['', ''])
       setTeam2(['', ''])
@@ -474,23 +642,35 @@ function NewMatchTab({ players, addMatch, onDone }) {
   )
 }
 
-function MatchesTab({ matches, removeMatch, players }) {
+function MatchesTab({ matches, removeMatch, players, updateMatch }) {
   const getName = id => players.find(p => p.id === id)?.name || 'Unknown'
   const [confirmDelete, setConfirmDelete] = useState(null)
+  const [filterPlayer, setFilterPlayer] = useState('')
+  const [filterType, setFilterType] = useState('all')
+  const [expandedMatch, setExpandedMatch] = useState(null)
+  const [commentText, setCommentText] = useState('')
+  const [commentAuthor, setCommentAuthor] = useState('')
 
   async function confirmDeleteMatch() {
     await removeMatch(confirmDelete)
     setConfirmDelete(null)
   }
 
-  if (matches.length === 0) {
-    return (
-      <div className="empty-state">
-        <div className="icon">📋</div>
-        <p>No matches recorded yet. Record your first match!</p>
-      </div>
-    )
+  async function addComment(matchId) {
+    if (!commentText.trim() || !commentAuthor.trim()) return
+    const match = matches.find(m => m.id === matchId)
+    const comments = [...(match.comments || [])]
+    comments.push({ author: commentAuthor.trim(), text: commentText.trim(), time: new Date().toISOString() })
+    await updateMatch(matchId, { comments: comments.map(c => ({ author: c.author, text: c.text, time: c.time })) })
+    setCommentText('')
   }
+
+  const filtered = matches.filter(m => {
+    if (filterPlayer && ![...m.team1, ...m.team2].includes(filterPlayer)) return false
+    if (filterType === 'singles' && (m.team1.length !== 1 || m.team2.length !== 1)) return false
+    if (filterType === 'doubles' && (m.team1.length !== 2 || m.team2.length !== 2)) return false
+    return true
+  })
 
   return (
     <div>
@@ -501,52 +681,94 @@ function MatchesTab({ matches, removeMatch, players }) {
           onCancel={() => setConfirmDelete(null)}
         />
       )}
-      <div className="card">
-        <h2>Match History ({matches.length})</h2>
-        {matches.map(m => {
-          const t1sets = m.sets.filter(s => s[0] > s[1]).length
-          const t1won = t1sets >= 2
-          return (
-            <div key={m.id} className="match-card">
-              <div className="match-header">
-                <span className="match-date">{new Date(m.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</span>
-                <div className="match-actions">
-                  <button className="btn btn-danger btn-sm" onClick={() => setConfirmDelete(m.id)}>🗑</button>
-                </div>
-              </div>
-              <div className="match-teams">
-                <div className={`match-team ${t1won ? 'winner' : ''}`}>
-                  <div className="match-team-names">{m.team1.map(getName).join(' & ')}</div>
-                  {t1won && <span style={{ fontSize: 11, color: 'var(--success)' }}>WIN</span>}
-                </div>
-                <div className="match-score-display">
-                  {m.sets.map((s, i) => (
-                    <div key={i} className={`set-score-badge ${s[0] > s[1] ? 'won' : ''}`}>
-                      {s[0]}-{s[1]}
-                    </div>
-                  ))}
-                </div>
-                <div className={`match-team ${!t1won ? 'winner' : ''}`}>
-                  <div className="match-team-names">{m.team2.map(getName).join(' & ')}</div>
-                  {!t1won && <span style={{ fontSize: 11, color: 'var(--success)' }}>WIN</span>}
-                </div>
-              </div>
-            </div>
-          )
-        })}
+
+      {/* Filters */}
+      <div className="card" style={{ paddingBlock: 14 }}>
+        <div className="filter-bar">
+          <select value={filterPlayer} onChange={e => setFilterPlayer(e.target.value)}>
+            <option value="">All Players</option>
+            {players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <select value={filterType} onChange={e => setFilterType(e.target.value)}>
+            <option value="all">All Types</option>
+            <option value="singles">Singles</option>
+            <option value="doubles">Doubles</option>
+          </select>
+        </div>
       </div>
+
+      {filtered.length === 0 ? (
+        <div className="empty-state">
+          <div className="icon">📋</div>
+          <p>{matches.length === 0 ? 'No matches recorded yet.' : 'No matches match your filters.'}</p>
+        </div>
+      ) : (
+        <div className="card">
+          <h2>Match History ({filtered.length})</h2>
+          {filtered.map(m => {
+            const t1sets = m.sets.filter(s => s[0] > s[1]).length
+            const t1won = t1sets >= 2
+            const isExpanded = expandedMatch === m.id
+            const comments = m.comments || []
+            return (
+              <div key={m.id} className="match-card">
+                <div className="match-header">
+                  <span className="match-date">{new Date(m.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                  <div className="match-actions">
+                    <button className="btn btn-sm" style={{ background: 'var(--border-light)', color: 'var(--text-secondary)', fontSize: 12 }}
+                      onClick={() => setExpandedMatch(isExpanded ? null : m.id)}>
+                      💬 {comments.length || ''}
+                    </button>
+                    <button className="btn btn-danger btn-sm" onClick={() => setConfirmDelete(m.id)}>🗑</button>
+                  </div>
+                </div>
+                <div className="match-teams">
+                  <div className={`match-team ${t1won ? 'winner' : ''}`}>
+                    <div className="match-team-names">{m.team1.map(getName).join(' & ')}</div>
+                    {t1won && <span style={{ fontSize: 11, color: 'var(--success)' }}>WIN</span>}
+                  </div>
+                  <div className="match-score-display">
+                    {m.sets.map((s, i) => (
+                      <div key={i} className={`set-score-badge ${s[0] > s[1] ? 'won' : ''}`}>
+                        {s[0]}-{s[1]}
+                      </div>
+                    ))}
+                  </div>
+                  <div className={`match-team ${!t1won ? 'winner' : ''}`}>
+                    <div className="match-team-names">{m.team2.map(getName).join(' & ')}</div>
+                    {!t1won && <span style={{ fontSize: 11, color: 'var(--success)' }}>WIN</span>}
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="comments-section">
+                    {comments.length > 0 && (
+                      <div className="comments-list">
+                        {comments.map((c, i) => (
+                          <div key={i} className="comment">
+                            <span className="comment-author">{c.author}</span>
+                            <span className="comment-text">{c.text}</span>
+                            <span className="comment-time">{new Date(c.time).toLocaleDateString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="comment-form">
+                      <input placeholder="Your name" value={commentAuthor} onChange={e => setCommentAuthor(e.target.value)}
+                        style={{ width: 100, flexShrink: 0 }} />
+                      <input placeholder="Add a comment..." value={commentText} onChange={e => setCommentText(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') addComment(m.id) }} style={{ flex: 1 }} />
+                      <button className="btn btn-primary btn-sm" onClick={() => addComment(m.id)}>Post</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
-}
-
-function getPlayerResult(m, playerId) {
-  const onTeam1 = m.team1.includes(playerId)
-  const onTeam2 = m.team2.includes(playerId)
-  if (!onTeam1 && !onTeam2) return null
-  const t1sets = m.sets.filter(s => s[0] > s[1]).length
-  const t1won = t1sets >= 2
-  const won = (onTeam1 && t1won) || (onTeam2 && !t1won)
-  return { won, onTeam1 }
 }
 
 function StatsTab({ players, matches }) {
@@ -562,15 +784,19 @@ function StatsTab({ players, matches }) {
   const getName = id => players.find(p => p.id === id)?.name || 'Unknown'
   const sortedMatches = [...matches].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))
 
+  // --- ELO ---
+  const { elo } = calcElo(players, matches)
+
   // --- Player stats ---
   const playerStats = players.map(p => {
-    let wins = 0, losses = 0, setsWon = 0, setsLost = 0, gamesWon = 0, gamesLost = 0
+    let wins = 0, losses = 0, setsWon = 0, setsLost = 0, gamesWon = 0, gamesLost = 0, totalSetsPlayed = 0
     matches.forEach(m => {
       const r = getPlayerResult(m, p.id)
       if (!r) return
       if (r.won) wins++; else losses++
       const t1sets = m.sets.filter(s => s[0] > s[1]).length
       const t2sets = m.sets.filter(s => s[1] > s[0]).length
+      totalSetsPlayed += m.sets.length
       if (r.onTeam1) {
         setsWon += t1sets; setsLost += t2sets
         m.sets.forEach(s => { gamesWon += s[0]; gamesLost += s[1] })
@@ -580,8 +806,13 @@ function StatsTab({ players, matches }) {
       }
     })
     const total = wins + losses
-    return { ...p, wins, losses, total, setsWon, setsLost, gamesWon, gamesLost, winRate: total > 0 ? (wins / total * 100) : 0 }
-  }).filter(p => p.total > 0).sort((a, b) => b.winRate - a.winRate || b.wins - a.wins)
+    const avgGamesPerSet = totalSetsPlayed > 0 ? ((gamesWon + gamesLost) / totalSetsPlayed) : 0
+    return {
+      ...p, wins, losses, total, setsWon, setsLost, gamesWon, gamesLost, totalSetsPlayed, avgGamesPerSet,
+      winRate: total > 0 ? (wins / total * 100) : 0,
+      eloRating: Math.round(elo[p.id] || 1200),
+    }
+  }).filter(p => p.total > 0).sort((a, b) => b.eloRating - a.eloRating)
 
   const totalGames = matches.reduce((sum, m) => sum + m.sets.reduce((ss, s) => ss + s[0] + s[1], 0), 0)
 
@@ -601,16 +832,13 @@ function StatsTab({ players, matches }) {
       if (currentType === 'w' && current > longest) longest = current
     })
     return { ...p, currentStreak: current, currentType, longestWinStreak: longest }
-  }).filter(p => {
-    const ps = playerStats.find(s => s.id === p.id)
-    return ps && ps.total > 0
-  })
+  }).filter(p => playerStats.find(s => s.id === p.id))
 
   const hotStreaks = [...streakData].filter(p => p.currentType === 'w').sort((a, b) => b.currentStreak - a.currentStreak)
   const coldStreaks = [...streakData].filter(p => p.currentType === 'l').sort((a, b) => b.currentStreak - a.currentStreak)
   const longestStreaks = [...streakData].sort((a, b) => b.longestWinStreak - a.longestWinStreak).filter(p => p.longestWinStreak > 0)
 
-  // --- Recent form (last 5 matches per player) ---
+  // --- Recent form ---
   const recentForm = players.map(p => {
     const playerMatches = sortedMatches.filter(m => getPlayerResult(m, p.id)).slice(-5)
     const results = playerMatches.map(m => getPlayerResult(m, p.id).won)
@@ -632,7 +860,7 @@ function StatsTab({ players, matches }) {
   })
   const h2hList = Object.values(h2h).filter(h => h.total > 0).sort((a, b) => b.total - a.total)
 
-  // --- Best partnerships (doubles) ---
+  // --- Partnerships ---
   const partnerships = {}
   matches.forEach(m => {
     const t1won = m.sets.filter(s => s[0] > s[1]).length >= 2
@@ -650,7 +878,7 @@ function StatsTab({ players, matches }) {
     .filter(p => p.total > 0)
     .sort((a, b) => b.winRate - a.winRate || b.wins - a.wins)
 
-  // --- Comebacks (won match after losing set 1) ---
+  // --- Comebacks ---
   const comebacks = {}
   matches.forEach(m => {
     if (m.sets.length < 3) return
@@ -658,14 +886,24 @@ function StatsTab({ players, matches }) {
     const matchWinner = m.sets.filter(s => s[0] > s[1]).length >= 2 ? 1 : 2
     if (set1winner === matchWinner) return
     const winnerTeam = matchWinner === 1 ? m.team1 : m.team2
-    winnerTeam.forEach(pid => {
-      comebacks[pid] = (comebacks[pid] || 0) + 1
-    })
+    winnerTeam.forEach(pid => { comebacks[pid] = (comebacks[pid] || 0) + 1 })
   })
   const comebackList = Object.entries(comebacks)
     .map(([id, count]) => ({ id, name: getName(id), count, player: players.find(p => p.id === id) }))
     .filter(c => c.player)
     .sort((a, b) => b.count - a.count)
+
+  // --- Most dominant & closest matches ---
+  const matchDetails = matches.map(m => {
+    const totalGames = m.sets.reduce((s, set) => s + set[0] + set[1], 0)
+    const t1games = m.sets.reduce((s, set) => s + set[0], 0)
+    const t2games = m.sets.reduce((s, set) => s + set[1], 0)
+    const margin = Math.abs(t1games - t2games)
+    const t1won = m.sets.filter(s => s[0] > s[1]).length >= 2
+    return { ...m, totalGames, t1games, t2games, margin, t1won }
+  })
+  const mostDominant = [...matchDetails].sort((a, b) => b.margin - a.margin).slice(0, 3)
+  const closestMatches = [...matchDetails].sort((a, b) => a.margin - b.margin || b.totalGames - a.totalGames).slice(0, 3)
 
   return (
     <>
@@ -689,9 +927,10 @@ function StatsTab({ players, matches }) {
         </div>
       </div>
 
-      {/* Leaderboard */}
+      {/* ELO Leaderboard */}
       <div className="card">
-        <h2>Leaderboard</h2>
+        <h2>ELO Rankings</h2>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>Ratings start at 1200. Beating higher-rated opponents gains more points.</p>
         {playerStats.map((p, i) => (
           <div key={p.id} className="leaderboard-row">
             <div className={`leaderboard-rank ${i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : ''}`}>
@@ -701,10 +940,79 @@ function StatsTab({ players, matches }) {
             <div className="leaderboard-info">
               <div className="leaderboard-name">{p.name}</div>
               <div className="leaderboard-record">
-                {p.wins}W - {p.losses}L · Sets: {p.setsWon}-{p.setsLost} · Games: {p.gamesWon}-{p.gamesLost}
+                {p.wins}W - {p.losses}L · Win rate: {p.winRate.toFixed(0)}% · Sets: {p.setsWon}-{p.setsLost}
               </div>
             </div>
-            <div className="leaderboard-winrate">{p.winRate.toFixed(0)}%</div>
+            <div className="leaderboard-winrate" style={{ fontSize: 18 }}>{p.eloRating}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Charts */}
+      <EloChart players={players} matches={matches} />
+      <WinRateChart players={players} matches={matches} />
+
+      {/* Avg games per set */}
+      <div className="card">
+        <h2>Average Games Per Set</h2>
+        {[...playerStats].sort((a, b) => b.avgGamesPerSet - a.avgGamesPerSet).map(p => (
+          <div key={p.id} className="leaderboard-row">
+            <Avatar player={p} size={28} />
+            <div className="leaderboard-info">
+              <div className="leaderboard-name">{p.name}</div>
+              <div className="leaderboard-record">{p.totalSetsPlayed} sets played · {p.gamesWon} won / {p.gamesLost} lost</div>
+            </div>
+            <div className="leaderboard-winrate" style={{ fontSize: 16, color: 'var(--text)' }}>{p.avgGamesPerSet.toFixed(1)}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Most Dominant */}
+      <div className="card">
+        <h2>Most Dominant Victories 💪</h2>
+        {mostDominant.map(m => (
+          <div key={m.id} className="match-card" style={{ marginBottom: 8 }}>
+            <div className="match-teams">
+              <div className={`match-team ${m.t1won ? 'winner' : ''}`}>
+                <div className="match-team-names">{m.team1.map(getName).join(' & ')}</div>
+              </div>
+              <div className="match-score-display">
+                {m.sets.map((s, i) => (
+                  <div key={i} className={`set-score-badge ${s[0] > s[1] ? 'won' : ''}`}>{s[0]}-{s[1]}</div>
+                ))}
+              </div>
+              <div className={`match-team ${!m.t1won ? 'winner' : ''}`}>
+                <div className="match-team-names">{m.team2.map(getName).join(' & ')}</div>
+              </div>
+            </div>
+            <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              Margin: {m.margin} games · {new Date(m.date).toLocaleDateString()}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Closest Matches */}
+      <div className="card">
+        <h2>Closest Matches 🔥</h2>
+        {closestMatches.map(m => (
+          <div key={m.id} className="match-card" style={{ marginBottom: 8 }}>
+            <div className="match-teams">
+              <div className={`match-team ${m.t1won ? 'winner' : ''}`}>
+                <div className="match-team-names">{m.team1.map(getName).join(' & ')}</div>
+              </div>
+              <div className="match-score-display">
+                {m.sets.map((s, i) => (
+                  <div key={i} className={`set-score-badge ${s[0] > s[1] ? 'won' : ''}`}>{s[0]}-{s[1]}</div>
+                ))}
+              </div>
+              <div className={`match-team ${!m.t1won ? 'winner' : ''}`}>
+                <div className="match-team-names">{m.team2.map(getName).join(' & ')}</div>
+              </div>
+            </div>
+            <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              {m.totalGames} total games · Margin: {m.margin} · {new Date(m.date).toLocaleDateString()}
+            </div>
           </div>
         ))}
       </div>
@@ -807,7 +1115,7 @@ function StatsTab({ players, matches }) {
         </div>
       )}
 
-      {/* Best Partnerships */}
+      {/* Partnerships */}
       {partnerList.length > 0 && (
         <div className="card">
           <h2>Best Partnerships (Doubles)</h2>
