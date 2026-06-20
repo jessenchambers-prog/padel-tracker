@@ -106,6 +106,10 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
   const [nickname, setNickname] = useState('')
   const [photoPreview, setPhotoPreview] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [editName, setEditName] = useState('')
+  const [editNickname, setEditNickname] = useState('')
+  const [editPhoto, setEditPhoto] = useState(null)
 
   async function handlePhotoSelect(e) {
     const file = e.target.files?.[0]
@@ -135,17 +139,34 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
     }
   }
 
-  async function changePhoto(playerId) {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = 'image/*'
-    input.onchange = async (e) => {
-      const file = e.target.files?.[0]
-      if (!file) return
-      const dataUrl = await resizeImage(file)
-      await updatePlayer(playerId, { photo: dataUrl })
+  function startEdit(p) {
+    setEditing(p.id)
+    setEditName(p.name)
+    setEditNickname(p.nickname || '')
+    setEditPhoto(p.photo || null)
+  }
+
+  async function handleEditPhotoSelect(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const dataUrl = await resizeImage(file)
+    setEditPhoto(dataUrl)
+  }
+
+  async function saveEdit(e) {
+    e.preventDefault()
+    if (!editName.trim() || saving) return
+    setSaving(true)
+    try {
+      await updatePlayer(editing, {
+        name: editName.trim(),
+        nickname: editNickname.trim(),
+        photo: editPhoto,
+      })
+      setEditing(null)
+    } finally {
+      setSaving(false)
     }
-    input.click()
   }
 
   async function handleRemovePlayer(id) {
@@ -175,6 +196,50 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
 
   return (
     <>
+      {/* Edit Modal */}
+      {editing && (
+        <div className="modal-overlay" onClick={() => setEditing(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Edit Player</h2>
+              <button className="btn btn-danger btn-sm" onClick={() => setEditing(null)}>✕</button>
+            </div>
+            <form onSubmit={saveEdit}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                <label htmlFor="edit-photo-input" className="photo-upload">
+                  {editPhoto
+                    ? <img src={editPhoto} alt="Preview" style={{ width: 88, height: 88, borderRadius: '50%', objectFit: 'cover' }} />
+                    : <div className="photo-upload-placeholder" style={{ width: 88, height: 88, fontSize: 24 }}>
+                        <span>📷</span>
+                        <span style={{ fontSize: 11 }}>Add Photo</span>
+                      </div>
+                  }
+                </label>
+                <input id="edit-photo-input" type="file" accept="image/*" onChange={handleEditPhotoSelect}
+                  style={{ display: 'none' }} />
+                {editPhoto && <button type="button" className="btn btn-danger btn-sm" onClick={() => setEditPhoto(null)}>Remove Photo</button>}
+              </div>
+              <div className="form-group">
+                <label>Name</label>
+                <input value={editName} onChange={e => setEditName(e.target.value)} required />
+              </div>
+              <div className="form-group">
+                <label>Nickname</label>
+                <input value={editNickname} onChange={e => setEditNickname(e.target.value)} placeholder="e.g. The Wall" />
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+                <button type="submit" className="btn btn-primary" style={{ flex: 1 }} disabled={saving}>
+                  {saving ? 'Saving...' : 'Save Changes'}
+                </button>
+                <button type="button" className="btn" style={{ background: 'var(--border-light)', color: 'var(--text)' }} onClick={() => setEditing(null)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <h2>Add Player</h2>
         <form onSubmit={handleAddPlayer}>
@@ -220,12 +285,13 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
         <div className="player-grid">
           {players.map(p => (
             <div key={p.id} className="player-card">
-              <Avatar player={p} size={44} onClick={() => changePhoto(p.id)} />
+              <Avatar player={p} size={44} />
               <div className="player-info">
                 <div className="player-name">{p.name}</div>
                 {p.nickname && <div className="player-nickname">"{p.nickname}"</div>}
                 <div className="player-stats-mini">{getPlayerRecord(p.id)}</div>
               </div>
+              <button className="btn btn-sm" style={{ background: 'var(--border-light)', color: 'var(--text-secondary)' }} onClick={() => startEdit(p)}>✏️</button>
               <button className="btn btn-danger btn-sm" onClick={() => handleRemovePlayer(p.id)}>✕</button>
             </div>
           ))}
