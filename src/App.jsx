@@ -51,6 +51,41 @@ function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
 }
 
+function ConfirmModal({ message, confirmLabel = 'Yes, delete', onConfirm, onCancel }) {
+  const [step, setStep] = useState(1)
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 360, textAlign: 'center' }}>
+        {step === 1 ? (
+          <>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>⚠️</div>
+            <h2 style={{ marginBottom: 8, fontSize: 18 }}>Are you sure?</h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 14, marginBottom: 20 }}>{message}</p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn" style={{ flex: 1, background: 'var(--border-light)', color: 'var(--text)' }} onClick={onCancel}>Cancel</button>
+              <button className="btn btn-primary" style={{ flex: 1, background: 'var(--danger)' }} onClick={() => setStep(2)}>
+                {confirmLabel}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🚨</div>
+            <h2 style={{ marginBottom: 8, fontSize: 18 }}>Really sure?</h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 14, marginBottom: 20 }}>This cannot be undone.</p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn" style={{ flex: 1, background: 'var(--border-light)', color: 'var(--text)' }} onClick={onCancel}>Cancel</button>
+              <button className="btn btn-primary" style={{ flex: 1, background: 'var(--danger)' }} onClick={onConfirm}>
+                Yes, I'm sure
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function normalizeSets(sets) {
   if (!sets) return []
   return sets.map(s => Array.isArray(s) ? s : [s.t1, s.t2])
@@ -110,6 +145,7 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
   const [editName, setEditName] = useState('')
   const [editNickname, setEditNickname] = useState('')
   const [editPhoto, setEditPhoto] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(null)
 
   async function handlePhotoSelect(e) {
     const file = e.target.files?.[0]
@@ -169,7 +205,7 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
     }
   }
 
-  async function handleRemovePlayer(id) {
+  function handleRemovePlayer(id) {
     const inMatch = matches.some(m =>
       [...m.team1, ...m.team2].includes(id)
     )
@@ -177,7 +213,12 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
       alert('Cannot remove a player who has recorded matches.')
       return
     }
-    await removePlayer(id)
+    setConfirmDelete(id)
+  }
+
+  async function confirmRemovePlayer() {
+    await removePlayer(confirmDelete)
+    setConfirmDelete(null)
   }
 
   function getPlayerRecord(id) {
@@ -196,6 +237,14 @@ function PlayersTab({ players, addPlayer, removePlayer, updatePlayer, matches })
 
   return (
     <>
+      {confirmDelete && (
+        <ConfirmModal
+          message={`Delete player "${players.find(p => p.id === confirmDelete)?.name}"? This will remove their profile.`}
+          onConfirm={confirmRemovePlayer}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
       {/* Edit Modal */}
       {editing && (
         <div className="modal-overlay" onClick={() => setEditing(null)}>
@@ -427,11 +476,11 @@ function NewMatchTab({ players, addMatch, onDone }) {
 
 function MatchesTab({ matches, removeMatch, players }) {
   const getName = id => players.find(p => p.id === id)?.name || 'Unknown'
+  const [confirmDelete, setConfirmDelete] = useState(null)
 
-  async function deleteMatch(id) {
-    if (confirm('Delete this match?')) {
-      await removeMatch(id)
-    }
+  async function confirmDeleteMatch() {
+    await removeMatch(confirmDelete)
+    setConfirmDelete(null)
   }
 
   if (matches.length === 0) {
@@ -445,6 +494,13 @@ function MatchesTab({ matches, removeMatch, players }) {
 
   return (
     <div>
+      {confirmDelete && (
+        <ConfirmModal
+          message="Delete this match? All stats from this match will be removed."
+          onConfirm={confirmDeleteMatch}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
       <div className="card">
         <h2>Match History ({matches.length})</h2>
         {matches.map(m => {
@@ -455,7 +511,7 @@ function MatchesTab({ matches, removeMatch, players }) {
               <div className="match-header">
                 <span className="match-date">{new Date(m.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</span>
                 <div className="match-actions">
-                  <button className="btn btn-danger btn-sm" onClick={() => deleteMatch(m.id)}>🗑</button>
+                  <button className="btn btn-danger btn-sm" onClick={() => setConfirmDelete(m.id)}>🗑</button>
                 </div>
               </div>
               <div className="match-teams">
