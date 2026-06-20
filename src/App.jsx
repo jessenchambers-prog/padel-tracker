@@ -57,7 +57,7 @@ function normalizeSets(sets) {
 }
 
 function App() {
-  const [tab, setTab] = useState('matches')
+  const [tab, setTab] = useState('stats')
   const [ready, setReady] = useState(false)
   const { items: players, loading: playersLoading, addItem: addPlayer, removeItem: removePlayer, updateItem: updatePlayer } = useCollection('players')
   const { items: matches, loading: matchesLoading, addItem: addMatch, removeItem: removeMatch } = useCollection('matches')
@@ -85,7 +85,7 @@ function App() {
       </header>
 
       <nav className="nav-tabs">
-        {['players', 'matches', 'new-match', 'stats'].map(t => (
+        {['stats', 'matches', 'new-match', 'players'].map(t => (
           <button key={t} className={`nav-tab ${tab === t ? 'active' : ''}`}
             onClick={() => setTab(t)}>
             {t === 'new-match' ? '+ Match' : t.charAt(0).toUpperCase() + t.slice(1)}
