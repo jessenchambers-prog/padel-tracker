@@ -51,6 +51,11 @@ function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
 }
 
+function normalizeSets(sets) {
+  if (!sets) return []
+  return sets.map(s => Array.isArray(s) ? s : [s.t1, s.t2])
+}
+
 function App() {
   const [tab, setTab] = useState('matches')
   const [ready, setReady] = useState(false)
@@ -70,7 +75,8 @@ function App() {
     )
   }
 
-  const sortedMatches = [...matches].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id))
+  const normalizedMatches = matches.map(m => ({ ...m, sets: normalizeSets(m.sets) }))
+  const sortedMatches = [...normalizedMatches].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id))
 
   return (
     <>
@@ -87,10 +93,10 @@ function App() {
         ))}
       </nav>
 
-      {tab === 'players' && <PlayersTab players={players} addPlayer={addPlayer} removePlayer={removePlayer} updatePlayer={updatePlayer} matches={matches} />}
+      {tab === 'players' && <PlayersTab players={players} addPlayer={addPlayer} removePlayer={removePlayer} updatePlayer={updatePlayer} matches={normalizedMatches} />}
       {tab === 'matches' && <MatchesTab matches={sortedMatches} removeMatch={removeMatch} players={players} />}
       {tab === 'new-match' && <NewMatchTab players={players} addMatch={addMatch} onDone={() => setTab('matches')} />}
-      {tab === 'stats' && <StatsTab players={players} matches={matches} />}
+      {tab === 'stats' && <StatsTab players={players} matches={normalizedMatches} />}
     </>
   )
 }
@@ -279,7 +285,7 @@ function NewMatchTab({ players, addMatch, onDone }) {
         date,
         team1: t1,
         team2: t2,
-        sets: activeSets,
+        sets: activeSets.map(s => ({ t1: s[0], t2: s[1] })),
       })
       setTeam1(['', ''])
       setTeam2(['', ''])
@@ -416,6 +422,16 @@ function MatchesTab({ matches, removeMatch, players }) {
   )
 }
 
+function getPlayerResult(m, playerId) {
+  const onTeam1 = m.team1.includes(playerId)
+  const onTeam2 = m.team2.includes(playerId)
+  if (!onTeam1 && !onTeam2) return null
+  const t1sets = m.sets.filter(s => s[0] > s[1]).length
+  const t1won = t1sets >= 2
+  const won = (onTeam1 && t1won) || (onTeam2 && !t1won)
+  return { won, onTeam1 }
+}
+
 function StatsTab({ players, matches }) {
   if (matches.length === 0) {
     return (
@@ -426,18 +442,19 @@ function StatsTab({ players, matches }) {
     )
   }
 
+  const getName = id => players.find(p => p.id === id)?.name || 'Unknown'
+  const sortedMatches = [...matches].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))
+
+  // --- Player stats ---
   const playerStats = players.map(p => {
     let wins = 0, losses = 0, setsWon = 0, setsLost = 0, gamesWon = 0, gamesLost = 0
     matches.forEach(m => {
-      const onTeam1 = m.team1.includes(p.id)
-      const onTeam2 = m.team2.includes(p.id)
-      if (!onTeam1 && !onTeam2) return
+      const r = getPlayerResult(m, p.id)
+      if (!r) return
+      if (r.won) wins++; else losses++
       const t1sets = m.sets.filter(s => s[0] > s[1]).length
       const t2sets = m.sets.filter(s => s[1] > s[0]).length
-      const t1won = t1sets >= 2
-      if ((onTeam1 && t1won) || (onTeam2 && !t1won)) wins++
-      else losses++
-      if (onTeam1) {
+      if (r.onTeam1) {
         setsWon += t1sets; setsLost += t2sets
         m.sets.forEach(s => { gamesWon += s[0]; gamesLost += s[1] })
       } else {
@@ -451,8 +468,91 @@ function StatsTab({ players, matches }) {
 
   const totalGames = matches.reduce((sum, m) => sum + m.sets.reduce((ss, s) => ss + s[0] + s[1], 0), 0)
 
+  // --- Win streaks ---
+  const streakData = players.map(p => {
+    let current = 0, longest = 0, currentType = null
+    sortedMatches.forEach(m => {
+      const r = getPlayerResult(m, p.id)
+      if (!r) return
+      if (r.won) {
+        if (currentType === 'w') current++
+        else { current = 1; currentType = 'w' }
+      } else {
+        if (currentType === 'l') current++
+        else { current = 1; currentType = 'l' }
+      }
+      if (currentType === 'w' && current > longest) longest = current
+    })
+    return { ...p, currentStreak: current, currentType, longestWinStreak: longest }
+  }).filter(p => {
+    const ps = playerStats.find(s => s.id === p.id)
+    return ps && ps.total > 0
+  })
+
+  const hotStreaks = [...streakData].filter(p => p.currentType === 'w').sort((a, b) => b.currentStreak - a.currentStreak)
+  const coldStreaks = [...streakData].filter(p => p.currentType === 'l').sort((a, b) => b.currentStreak - a.currentStreak)
+  const longestStreaks = [...streakData].sort((a, b) => b.longestWinStreak - a.longestWinStreak).filter(p => p.longestWinStreak > 0)
+
+  // --- Recent form (last 5 matches per player) ---
+  const recentForm = players.map(p => {
+    const playerMatches = sortedMatches.filter(m => getPlayerResult(m, p.id)).slice(-5)
+    const results = playerMatches.map(m => getPlayerResult(m, p.id).won)
+    const recentWins = results.filter(Boolean).length
+    return { ...p, results, recentWins, recentTotal: results.length, recentRate: results.length > 0 ? (recentWins / results.length * 100) : 0 }
+  }).filter(p => p.recentTotal > 0).sort((a, b) => b.recentRate - a.recentRate || b.recentWins - a.recentWins)
+
+  // --- Head-to-head ---
+  const h2h = {}
+  matches.forEach(m => {
+    if (m.team1.length !== 1 || m.team2.length !== 1) return
+    const p1 = m.team1[0], p2 = m.team2[0]
+    const key = [p1, p2].sort().join('_')
+    if (!h2h[key]) h2h[key] = { p1: [p1, p2].sort()[0], p2: [p1, p2].sort()[1], wins: {}, total: 0 }
+    const t1won = m.sets.filter(s => s[0] > s[1]).length >= 2
+    const winner = t1won ? p1 : p2
+    h2h[key].wins[winner] = (h2h[key].wins[winner] || 0) + 1
+    h2h[key].total++
+  })
+  const h2hList = Object.values(h2h).filter(h => h.total > 0).sort((a, b) => b.total - a.total)
+
+  // --- Best partnerships (doubles) ---
+  const partnerships = {}
+  matches.forEach(m => {
+    const t1won = m.sets.filter(s => s[0] > s[1]).length >= 2
+    ;[m.team1, m.team2].forEach((team, ti) => {
+      if (team.length !== 2) return
+      const key = [...team].sort().join('_')
+      if (!partnerships[key]) partnerships[key] = { p1: [...team].sort()[0], p2: [...team].sort()[1], wins: 0, losses: 0 }
+      const teamWon = (ti === 0 && t1won) || (ti === 1 && !t1won)
+      if (teamWon) partnerships[key].wins++
+      else partnerships[key].losses++
+    })
+  })
+  const partnerList = Object.values(partnerships)
+    .map(p => ({ ...p, total: p.wins + p.losses, winRate: (p.wins / (p.wins + p.losses)) * 100 }))
+    .filter(p => p.total > 0)
+    .sort((a, b) => b.winRate - a.winRate || b.wins - a.wins)
+
+  // --- Comebacks (won match after losing set 1) ---
+  const comebacks = {}
+  matches.forEach(m => {
+    if (m.sets.length < 3) return
+    const set1winner = m.sets[0][0] > m.sets[0][1] ? 1 : 2
+    const matchWinner = m.sets.filter(s => s[0] > s[1]).length >= 2 ? 1 : 2
+    if (set1winner === matchWinner) return
+    const winnerTeam = matchWinner === 1 ? m.team1 : m.team2
+    winnerTeam.forEach(pid => {
+      comebacks[pid] = (comebacks[pid] || 0) + 1
+    })
+  })
+  const comebackList = Object.entries(comebacks)
+    .map(([id, count]) => ({ id, name: getName(id), count, player: players.find(p => p.id === id) }))
+    .filter(c => c.player)
+    .sort((a, b) => b.count - a.count)
+
   return (
     <>
+      {/* Overview */}
       <div className="stats-grid">
         <div className="stat-card">
           <div className="stat-value">{matches.length}</div>
@@ -472,6 +572,7 @@ function StatsTab({ players, matches }) {
         </div>
       </div>
 
+      {/* Leaderboard */}
       <div className="card">
         <h2>Leaderboard</h2>
         {playerStats.map((p, i) => (
@@ -490,6 +591,145 @@ function StatsTab({ players, matches }) {
           </div>
         ))}
       </div>
+
+      {/* Recent Form */}
+      <div className="card">
+        <h2>Recent Form (Last 5)</h2>
+        {recentForm.map(p => (
+          <div key={p.id} className="leaderboard-row">
+            <Avatar player={p} size={32} />
+            <div className="leaderboard-info">
+              <div className="leaderboard-name">{p.name}</div>
+              <div className="form-dots">
+                {p.results.map((won, i) => (
+                  <span key={i} className={`form-dot ${won ? 'win' : 'loss'}`}>{won ? 'W' : 'L'}</span>
+                ))}
+              </div>
+            </div>
+            <div className="leaderboard-winrate" style={{ color: p.recentRate >= 60 ? 'var(--success)' : p.recentRate <= 40 ? 'var(--danger)' : 'var(--text-secondary)' }}>
+              {p.recentRate.toFixed(0)}%
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Win Streaks */}
+      <div className="card">
+        <h2>Win Streaks</h2>
+        <div className="streak-section">
+          {hotStreaks.length > 0 && (
+            <div className="streak-group">
+              <h3 className="streak-subtitle">🔥 Current Hot Streaks</h3>
+              {hotStreaks.map(p => (
+                <div key={p.id} className="streak-row">
+                  <Avatar player={p} size={28} />
+                  <span className="streak-name">{p.name}</span>
+                  <span className="streak-badge hot">{p.currentStreak}W</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {coldStreaks.length > 0 && (
+            <div className="streak-group">
+              <h3 className="streak-subtitle">🥶 Current Cold Streaks</h3>
+              {coldStreaks.map(p => (
+                <div key={p.id} className="streak-row">
+                  <Avatar player={p} size={28} />
+                  <span className="streak-name">{p.name}</span>
+                  <span className="streak-badge cold">{p.currentStreak}L</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {longestStreaks.length > 0 && (
+            <div className="streak-group">
+              <h3 className="streak-subtitle">👑 All-Time Best Win Streaks</h3>
+              {longestStreaks.map(p => (
+                <div key={p.id} className="streak-row">
+                  <Avatar player={p} size={28} />
+                  <span className="streak-name">{p.name}</span>
+                  <span className="streak-badge">{p.longestWinStreak}W</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Head-to-Head */}
+      {h2hList.length > 0 && (
+        <div className="card">
+          <h2>Head-to-Head (Singles)</h2>
+          {h2hList.map(h => {
+            const w1 = h.wins[h.p1] || 0
+            const w2 = h.wins[h.p2] || 0
+            const p1 = players.find(p => p.id === h.p1)
+            const p2 = players.find(p => p.id === h.p2)
+            if (!p1 || !p2) return null
+            const pct1 = (w1 / h.total) * 100
+            return (
+              <div key={`${h.p1}_${h.p2}`} className="h2h-row">
+                <div className="h2h-player">
+                  <Avatar player={p1} size={28} />
+                  <span className={w1 > w2 ? 'h2h-leader' : ''}>{p1.name}</span>
+                </div>
+                <div className="h2h-score">
+                  <div className="h2h-bar">
+                    <div className="h2h-bar-fill left" style={{ width: `${pct1}%` }} />
+                    <div className="h2h-bar-fill right" style={{ width: `${100 - pct1}%` }} />
+                  </div>
+                  <span className="h2h-record">{w1} - {w2}</span>
+                </div>
+                <div className="h2h-player right">
+                  <span className={w2 > w1 ? 'h2h-leader' : ''}>{p2.name}</span>
+                  <Avatar player={p2} size={28} />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Best Partnerships */}
+      {partnerList.length > 0 && (
+        <div className="card">
+          <h2>Best Partnerships (Doubles)</h2>
+          {partnerList.map((p, i) => {
+            const p1 = players.find(pl => pl.id === p.p1)
+            const p2 = players.find(pl => pl.id === p.p2)
+            if (!p1 || !p2) return null
+            return (
+              <div key={`${p.p1}_${p.p2}`} className="partnership-row">
+                <div className="partnership-rank">{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}</div>
+                <div className="partnership-avatars">
+                  <Avatar player={p1} size={28} />
+                  <Avatar player={p2} size={28} />
+                </div>
+                <div className="partnership-info">
+                  <div className="partnership-names">{p1.name} & {p2.name}</div>
+                  <div className="partnership-record">{p.wins}W - {p.losses}L</div>
+                </div>
+                <div className="leaderboard-winrate" style={{ fontSize: 18 }}>{p.winRate.toFixed(0)}%</div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Comebacks */}
+      {comebackList.length > 0 && (
+        <div className="card">
+          <h2>Comeback Kings 👊</h2>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>Won the match after losing Set 1</p>
+          {comebackList.map(c => (
+            <div key={c.id} className="streak-row">
+              <Avatar player={c.player} size={28} />
+              <span className="streak-name">{c.name}</span>
+              <span className="streak-badge hot">{c.count} comeback{c.count !== 1 ? 's' : ''}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </>
   )
 }
